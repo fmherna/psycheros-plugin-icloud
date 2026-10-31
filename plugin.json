@@ -1,0 +1,25 @@
+{
+  "id": "icloud",
+  "name": "iCloud",
+  "version": "0.1.0",
+  "apiVersion": 2,
+  "description": "My iCloud integration — mail (read), calendar, and reminders/tasks over open standards (IMAP + CalDAV) with an app-specific password. No OAuth, no expiring tokens, no cloud-console billing.",
+  "homepageUrl": "https://github.com/fmherna/psycheros-plugin-icloud",
+  "enabled": true,
+  "compatibility": {
+    "psycheros": ">=1.0.0",
+    "entityCore": ">=1.0.0"
+  },
+  "entrypoints": {
+    "psycheros": "./psycheros.ts",
+    "entityCore": "./entity-core.ts"
+  },
+  "update": {
+    "repoUrl": "https://github.com/fmherna/psycheros-plugin-icloud",
+    "tagPrefix": "v"
+  },
+  "promptHookDefaults": {
+    "timeoutMs": 5000,
+    "maxChars": 1500
+  }
+}

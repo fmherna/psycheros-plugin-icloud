@@ -1,0 +1,6 @@
+# Never commit live state or credentials.
+state/
+*.env
+!secrets.example.env
+secrets/
+.DS_Store
