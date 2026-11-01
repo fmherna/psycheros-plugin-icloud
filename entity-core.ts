@@ -104,8 +104,13 @@ const icloudStatusTool = makeTool(
   "icloud_status",
   "Check my iCloud integration: credentials present, CalDAV calendar home, " +
     "IMAP reachability, cache freshness. I run this first whenever something " +
-    "iCloud-shaped misbehaves, and after changing credentials.",
-  {},
+    "iCloud-shaped misbehaves, and after changing credentials. Pass " +
+    "`action: 'rediscover'` to bust the CalDAV discovery cache first — use " +
+    "it when server-side state changed (new lists, fresh Apple ID) and my " +
+    "view looks stale.",
+  {
+    action: actionSchema("rediscover"),
+  },
   statusHandler,
 );
 

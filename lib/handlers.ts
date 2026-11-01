@@ -145,7 +145,12 @@ export async function statusHandler(
   args: Record<string, unknown>,
   deps: HandlerDeps,
 ): Promise<HandlerResult> {
-  void actionOf(args);
+  // action "rediscover" busts the CalDAV discovery cache first — the escape
+  // hatch when server-side state changed under a cached empty home.
+  if (actionOf(args) === "rediscover") {
+    invalidateDiscovery();
+    void refreshGlance(deps);
+  }
   if (!isConfigured(deps)) return notConfigured();
   const data: Record<string, unknown> = { configured: true };
   const lines: string[] = [`configured as ${deps.appleId}`];
@@ -503,7 +508,7 @@ export async function mailHandler(
   }
 }
 
-/** Force re-discovery on the next call — for icloud_status action="rediscover". */
+/** Force re-discovery on the next call — used by icloud_status "rediscover". */
 export function rediscover(): void {
   invalidateDiscovery();
 }

@@ -192,6 +192,8 @@ export interface CalDAVDiscovery {
 let cachedDiscovery: CalDAVDiscovery | undefined;
 let inFlightDiscovery: Promise<CalDAVDiscovery> | undefined;
 const DISCOVERY_TTL_MS = 6 * 60 * 60 * 1000;
+/** Empty homes are provisional (lazy provisioning on new accounts). */
+const EMPTY_HOME_TTL_MS = 45_000;
 
 export function invalidateDiscovery(): void {
   cachedDiscovery = undefined;
@@ -282,21 +284,35 @@ export async function listCollections(
 
 /** Cached discovery (shared by every tool call; refetched when expired). */
 export function getDiscovery(deps: CalDAVDeps): Promise<CalDAVDiscovery> {
-  if (
-    cachedDiscovery &&
-    Date.now() - cachedDiscovery.discoveredAt < DISCOVERY_TTL_MS
-  ) {
+  if (!cachedDiscovery) return discover(deps);
+  // An empty home is a *provisional* fact — brand-new Apple IDs provision
+  // their default calendar lazily, so caching "empty" for the full TTL kept
+  // me blind for hours after the lists came into existence. Empty homes
+  // re-check after a short window; real homes keep the long TTL.
+  const ttl = cachedDiscovery.collections.length > 0
+    ? DISCOVERY_TTL_MS
+    : EMPTY_HOME_TTL_MS;
+  if (Date.now() - cachedDiscovery.discoveredAt < ttl) {
     return Promise.resolve(cachedDiscovery);
   }
   return discover(deps);
 }
 
-function parseMultistatusCollections(xml: string): CalDAVCollection[] {
+/**
+ * Split a 207 multistatus into `<response>` bodies. Apple writes the tag
+ * with attributes (`<response xmlns="DAV:">`), so a bare-tag match finds
+ * nothing — every DAV element regex in here must tolerate attributes.
+ */
+function* responseBodies(xml: string): Generator<string> {
+  const pattern =
+    /<(?:[A-Za-z0-9]+:)?response(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9]+:)?response>/g;
+  for (const match of xml.matchAll(pattern)) yield match[1]!;
+}
+
+/** Exported for tests — parses a Depth-1 collection listing. */
+export function parseMultistatusCollections(xml: string): CalDAVCollection[] {
   const collections: CalDAVCollection[] = [];
-  const responseSplit =
-    /<(?:[A-Za-z0-9]+:)?response>([\s\S]*?)<\/(?:[A-Za-z0-9]+:)?response>/g;
-  for (const match of xml.matchAll(responseSplit)) {
-    const body = match[1]!;
+  for (const body of responseBodies(xml)) {
     const href = firstHref(body);
     if (!href) continue;
     const resourceType = firstElement(body, "resourcetype") ?? "";
@@ -307,7 +323,11 @@ function parseMultistatusCollections(xml: string): CalDAVCollection[] {
     const compSet = firstElement(body, "supported-calendar-component-set") ??
       "";
     const kinds: CalDAVCollection["kinds"] = [];
-    for (const comp of compSet.matchAll(/comp\s+name="(VEVENT|VTODO)"/g)) {
+    // Apple emits both quote styles depending on endpoint: name="VEVENT"
+    // and name='VEVENT'.
+    for (
+      const comp of compSet.matchAll(/comp\s+name=["']?(VEVENT|VTODO)["']?/g)
+    ) {
       kinds.push(comp[1] as "VEVENT" | "VTODO");
     }
     if (kinds.length === 0) kinds.push("VEVENT", "VTODO");
@@ -341,9 +361,15 @@ function pickCollection(
     );
   }
   if (!name) return matching[0]!;
-  const found = matching.find(
-    (c) => c.displayName.trim().toLowerCase() === name.trim().toLowerCase(),
-  );
+  const lowerName = name.trim().toLowerCase();
+  const found =
+    matching.find((c) => c.displayName.trim().toLowerCase() === lowerName) ??
+      // Lenient fallback: operator-specified names often omit suffixes/emoji
+      // ("Reminders" vs the display name "Reminders ⚠️").
+      matching.find((c) =>
+        c.displayName.trim().toLowerCase().startsWith(lowerName) &&
+        lowerName.length >= 3
+      );
   if (!found) {
     throw new CalDAVError(
       `no ${
@@ -424,14 +450,10 @@ function toCompactUtc(d: Date): string {
   );
 }
 
-function parseMultistatusObjects(xml: string): CalDAVObject[] {
+/** Exported for tests — parses a calendar-query REPORT multistatus. */
+export function parseMultistatusObjects(xml: string): CalDAVObject[] {
   const objects: CalDAVObject[] = [];
-  for (
-    const match of xml.matchAll(
-      /<(?:[A-Za-z0-9]+:)?response>([\s\S]*?)<\/(?:[A-Za-z0-9]+:)?response>/g,
-    )
-  ) {
-    const body = match[1]!;
+  for (const body of responseBodies(xml)) {
     const href = firstHref(body);
     const etagMatch = /<(?:[A-Za-z0-9]+:)?getetag[^>]*>([^<]*)</.exec(body);
     const dataMatch =
