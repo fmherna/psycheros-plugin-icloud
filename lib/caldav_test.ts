@@ -75,13 +75,19 @@ const HOME_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </multistatus>`;
 
 Deno.test("collection listing parses Apple's default-namespace, attribute-tag XML", () => {
-  const collections = parseMultistatusCollections(HOME_XML);
+  // Base URL mimics the regional content host discovery hands back —
+  // collection hrefs arrive as bare paths and MUST resolve against the
+  // request host, not the caldav.icloud.com front door (which serves
+  // reads but 501s writes).
+  const baseUrl = "https://p44-caldav.icloud.com/11112222333/calendars/";
+  const collections = parseMultistatusCollections(HOME_XML, baseUrl);
   // The home root has no <calendar/> resourcetype and must be skipped.
   assert.equal(collections.length, 2);
   const reminders = collections.find((c) => c.displayName === "Reminders ⚠️");
   assert.ok(reminders);
   assert.deepEqual(reminders.kinds, ["VTODO"]);
   assert.equal(reminders.color, "#B14BC9");
+  assert.ok(reminders.href.startsWith("https://p44-caldav.icloud.com/"));
   const home = collections.find((c) => c.displayName === "Home");
   assert.ok(home);
   assert.deepEqual(home.kinds, ["VEVENT"]);
@@ -92,7 +98,10 @@ Deno.test("collection listing parses Apple's default-namespace, attribute-tag XM
 
 Deno.test("double-quoted comp names parse too (other Apple endpoints)", () => {
   const xml = HOME_XML.replace(/name='(VEVENT|VTODO)'/g, 'name="$1"');
-  const collections = parseMultistatusCollections(xml);
+  const collections = parseMultistatusCollections(
+    xml,
+    "https://caldav.icloud.com/",
+  );
   assert.equal(collections.length, 2);
   assert.deepEqual(
     collections.map((c) => c.kinds.join("+")).sort(),
@@ -129,10 +138,14 @@ END:VCALENDAR
 </multistatus>`;
 
 Deno.test("object listing parses etag + calendar-data with attribute-carrying tags", () => {
-  const objects = parseMultistatusObjects(QUERY_XML);
+  const objects = parseMultistatusObjects(
+    QUERY_XML,
+    "https://p44-caldav.icloud.com/11112222333/calendars/A9CCB11C-8C0F-4E94-A222-4E32B1D57C10/",
+  );
   assert.equal(objects.length, 1);
   assert.equal(objects[0].uid, "starter-event@icloud.com");
   assert.equal(objects[0].component.summary, "Starter event");
   assert.equal(objects[0].etag, "abc-etag-1");
   assert.match(objects[0].ics, /BEGIN:VEVENT/);
+  assert.ok(objects[0].href.startsWith("https://p44-caldav.icloud.com/"));
 });

@@ -83,6 +83,18 @@ Options: `--into "<Reminders list name>"` to target a specific list (default:
 the first one), `--include-completed` (default skips completed), `--dry-run`.
 The Google side is a plain file read — no OAuth, no API.
 
+## Known limitation: upgraded Reminders lists
+
+Apple has been migrating Reminders to a new engine. When a list gets upgraded
+(Apple leaves notice items in the list — e.g. "The creator of this list has
+upgraded these reminders."), the classic CalDAV VTODO surface becomes a
+**compatibility mirror**: items entered in the Reminders app or on icloud.com
+may not appear to me, and I may see only Apple's upgrade notices where real
+tasks live. Writes (add/complete/ delete) are accepted by the server, but
+whether they sync UP into the new engine for a given account should be verified
+once against icloud.com before relying on them. Calendar events and mail are
+unaffected — CalDAV remains Calendar's canonical sync path.
+
 ## Design notes
 
 - **Rate-limit hygiene.** CalDAV discovery is cached 6h per process and

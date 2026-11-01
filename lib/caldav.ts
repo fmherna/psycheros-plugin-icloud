@@ -84,7 +84,10 @@ async function davRequest(
     ...extraHeaders,
   };
   if (depth !== undefined) headers["Depth"] = String(depth);
-  if (body !== undefined) {
+  // Default to XML only when the caller didn't already declare a type —
+  // PUTs carry text/calendar bodies, and mislabeling them made Apple
+  // answer 501 Not Implemented on every write.
+  if (body !== undefined && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/xml; charset=utf-8";
   }
 
@@ -270,7 +273,10 @@ export async function listCollections(
     1,
   );
   assertStatus(collectionsRes, [207], "collection listing");
-  const collections = parseMultistatusCollections(await collectionsRes.text());
+  const collections = parseMultistatusCollections(
+    await collectionsRes.text(),
+    homeUrl,
+  );
 
   const discovery: CalDAVDiscovery = {
     principalUrl,
@@ -309,8 +315,23 @@ function* responseBodies(xml: string): Generator<string> {
   for (const match of xml.matchAll(pattern)) yield match[1]!;
 }
 
+/**
+ * Resolve a response href against the URL the request actually went to —
+ * NOT a hardcoded host. Apple's discovery returns the calendar home on a
+ * regional content host (e.g. p44-caldav.icloud.com) which is the writable
+ * location; collection hrefs arrive as bare paths, and resolving them
+ * against the front door silently rerouted my writes to a host that 501s
+ * them.
+ */
+function resolveHref(href: string, requestedUrl: string): string {
+  return new URL(href, requestedUrl).href;
+}
+
 /** Exported for tests — parses a Depth-1 collection listing. */
-export function parseMultistatusCollections(xml: string): CalDAVCollection[] {
+export function parseMultistatusCollections(
+  xml: string,
+  baseUrl: string,
+): CalDAVCollection[] {
   const collections: CalDAVCollection[] = [];
   for (const body of responseBodies(xml)) {
     const href = firstHref(body);
@@ -333,7 +354,7 @@ export function parseMultistatusCollections(xml: string): CalDAVCollection[] {
     if (kinds.length === 0) kinds.push("VEVENT", "VTODO");
     const color = firstElement(body, "calendar-color")?.trim();
     collections.push({
-      href: new URL(href, CALDAV_HOST + "/").href,
+      href: resolveHref(href, baseUrl),
       displayName,
       kinds,
       color: color && color.startsWith("#") ? color.slice(0, 7) : undefined,
@@ -412,7 +433,7 @@ async function queryCollection(
     1,
   );
   assertStatus(response, [207], `${component} query`);
-  return parseMultistatusObjects(await response.text());
+  return parseMultistatusObjects(await response.text(), collection.href);
 }
 
 async function queryByUid(
@@ -437,7 +458,7 @@ async function queryByUid(
     1,
   );
   assertStatus(response, [207], "UID lookup");
-  return parseMultistatusObjects(await response.text())[0];
+  return parseMultistatusObjects(await response.text(), collection.href)[0];
 }
 
 function toCompactUtc(d: Date): string {
@@ -451,7 +472,10 @@ function toCompactUtc(d: Date): string {
 }
 
 /** Exported for tests — parses a calendar-query REPORT multistatus. */
-export function parseMultistatusObjects(xml: string): CalDAVObject[] {
+export function parseMultistatusObjects(
+  xml: string,
+  baseUrl: string,
+): CalDAVObject[] {
   const objects: CalDAVObject[] = [];
   for (const body of responseBodies(xml)) {
     const href = firstHref(body);
@@ -466,7 +490,7 @@ export function parseMultistatusObjects(xml: string): CalDAVObject[] {
     const component = parseComponent(ics);
     if (!component) continue;
     objects.push({
-      href: new URL(href, CALDAV_HOST + "/").href,
+      href: resolveHref(href, baseUrl),
       etag: (etagMatch?.[1] ?? "").trim().replace(/^"|"$/g, ""),
       uid: component.uid,
       component,
