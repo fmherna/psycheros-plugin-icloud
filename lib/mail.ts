@@ -38,6 +38,60 @@ import type { ImapFlow, MessageEnvelopeObject } from "npm:imapflow@1.7.8";
 
 const IMAP_HOST = "imap.mail.me.com";
 const IMAP_PORT = 993;
+const SMTP_HOST = "smtp.mail.me.com";
+const SMTP_PORT = 587;
+
+export interface SendMailArgs {
+  to: string[];
+  cc?: string[];
+  subject: string;
+  body: string;
+}
+
+export interface SentReceipt {
+  messageId: string;
+  serverResponse: string;
+}
+
+/**
+ * Send plain-text mail through iCloud's SMTP submission endpoint.
+ *
+ * nodemailer is imported lazily per send, same discipline as imapflow: the
+ * rest of my plugin loads without it, and send simply reports unavailable
+ * until the dependency lands in cache. STARTTLS is mandatory (requireTLS)
+ * so credentials never cross a plaintext connection.
+ */
+export async function sendMail(
+  deps: MailDeps,
+  senderName: string | undefined,
+  args: SendMailArgs,
+): Promise<SentReceipt> {
+  const nodemailer = (await import("npm:nodemailer@6.10.1")).default;
+  const transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: false,
+    requireTLS: true,
+    auth: { user: deps.appleId, pass: deps.appPassword },
+    connectionTimeout: 20_000,
+    greetingTimeout: 20_000,
+    socketTimeout: 30_000,
+  });
+  try {
+    const info = await transporter.sendMail({
+      from: senderName
+        ? { name: senderName, address: deps.appleId }
+        : deps.appleId,
+      to: args.to,
+      cc: args.cc,
+      subject: args.subject,
+      text: args.body,
+    });
+    return { messageId: info.messageId, serverResponse: info.response };
+  } finally {
+    transporter.close();
+  }
+}
 
 async function connect(deps: MailDeps): Promise<ImapFlow> {
   const { ImapFlow: Ctor } = await import("npm:imapflow@1.7.8");

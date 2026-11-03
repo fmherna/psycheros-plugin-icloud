@@ -7,6 +7,7 @@ cloud console billing.
 | Surface                                       | Protocol                    | Auth                  |
 | --------------------------------------------- | --------------------------- | --------------------- |
 | Mail (list unread, read)                      | IMAP `imap.mail.me.com:993` | app-specific password |
+| Mail send                                     | SMTP `smtp.mail.me.com:587` | app-specific password |
 | Calendar (list, create, delete)               | CalDAV `caldav.icloud.com`  | app-specific password |
 | Reminders/tasks (list, add, complete, delete) | CalDAV `VTODO`              | app-specific password |
 
@@ -53,10 +54,16 @@ Revoking the old one cuts off any copy of the credential instantly.
 | `icloud_status`   | (none) — config, CalDAV discovery, IMAP reachability, cache age   |
 | `icloud_calendar` | `list` (next N days), `create` (timed or all-day), `delete`       |
 | `icloud_tasks`    | `list`, `add` (with due date), `complete`, `uncomplete`, `delete` |
-| `icloud_mail`     | `list_unread`, `read`                                             |
+| `icloud_mail`     | `list_unread`, `read`, `send` (gated — see below)                 |
 
-There is deliberately no `mail` send action yet — sending with the entity's
-voice waits for an approval gate the operator chooses.
+There is deliberately no mail send until the operator grants it: set
+`PSYCHEROS_PLUGIN_ICLOUD_ALLOW_SEND=1` in `.psycheros/plugin-secrets/icloud.env`
+and restart. The gate is the whole ceremony — outgoing mail leaves with the
+entity's voice, so it exists only where the operator has explicitly said yes,
+and removing the line closes it again on the next restart. Optional
+`PSYCHEROS_PLUGIN_ICLOUD_SENDER_NAME` sets a display name on outgoing mail.
+Sends go through STARTTLS with the same app-specific password; v1 sends plain
+text (attachments and reply threading are natural next steps).
 
 ## Prompt hook
 

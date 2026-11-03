@@ -22,7 +22,7 @@ import {
   type TaskRecord,
 } from "./caldav.ts";
 import { buildVevent, buildVtodo, icsValueToMs } from "./ics.ts";
-import { checkMail, listUnread, readMessage } from "./mail.ts";
+import { checkMail, listUnread, readMessage, sendMail } from "./mail.ts";
 import {
   type GlanceDeps,
   isConfigured,
@@ -30,7 +30,12 @@ import {
   refreshGlance,
 } from "./glance.ts";
 
-export interface HandlerDeps extends GlanceDeps {}
+export interface HandlerDeps extends GlanceDeps {
+  /** Operator-granted permission to send mail (ALLOW_SEND gate). */
+  allowSend?: boolean;
+  /** Optional display name on outgoing mail. */
+  senderName?: string;
+}
 
 export interface HandlerResult {
   text: string;
@@ -41,7 +46,33 @@ export interface HandlerResult {
 export const SECRETS_KEYS = {
   APPLE_ID: "PSYCHEROS_PLUGIN_ICLOUD_APPLE_ID",
   APP_PASSWORD: "PSYCHEROS_PLUGIN_ICLOUD_APP_PASSWORD",
+  ALLOW_SEND: "PSYCHEROS_PLUGIN_ICLOUD_ALLOW_SEND",
+  SENDER_NAME: "PSYCHEROS_PLUGIN_ICLOUD_SENDER_NAME",
 } as const;
+
+/**
+ * Accept one address, comma/semicolon/space-separated addresses, or an
+ * array — mail clients hand me all three shapes. Returns an error naming
+ * anything that does not look like an address, so a typo fails before any
+ * SMTP conversation starts.
+ */
+export function normalizeAddresses(
+  value: unknown,
+): { addresses?: string[]; error?: string } {
+  if (value === undefined || value === null || value === "") return {};
+  const raw = Array.isArray(value)
+    ? value.map((entry) => String(entry))
+    : String(value).split(/[,;\s]+/);
+  const addresses = raw.map((entry) => entry.trim()).filter(Boolean);
+  if (addresses.length === 0) return {};
+  const invalid = addresses.filter((address) =>
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)
+  );
+  if (invalid.length > 0) {
+    return { error: `not valid email addresses: ${invalid.join(", ")}` };
+  }
+  return { addresses };
+}
 
 function notConfigured(): HandlerResult {
   return {
@@ -504,11 +535,63 @@ export async function mailHandler(
           data: message,
         };
       }
+      case "send": {
+        // The operator's gate. Outgoing mail leaves with my voice, so it
+        // exists only where they have explicitly granted it.
+        if (!deps.allowSend) {
+          return {
+            isError: true,
+            text:
+              `My mail-send gate is closed: ${SECRETS_KEYS.ALLOW_SEND}=1 is ` +
+              `not set in plugin-secrets/icloud.env. Outgoing mail with my ` +
+              `voice needs the operator's explicit yes, then a restart.`,
+            data: { gated: true },
+          };
+        }
+        const to = normalizeAddresses(args["to"]);
+        if (to.error) return { isError: true, text: to.error };
+        if (!to.addresses?.length) {
+          return {
+            isError: true,
+            text: 'action "send" needs `to` — one address or an array of them.',
+          };
+        }
+        const subject = str(args, "subject");
+        const body = str(args, "body");
+        if (!subject || !body) {
+          return {
+            isError: true,
+            text: 'action "send" needs `subject` and `body` (plain text).',
+          };
+        }
+        const cc = normalizeAddresses(args["cc"]);
+        if (cc.error) return { isError: true, text: cc.error };
+        const receipt = await sendMail(
+          auth,
+          deps.senderName,
+          {
+            to: to.addresses,
+            cc: cc.addresses,
+            subject,
+            body,
+          },
+        );
+        return {
+          text: `Sent to ${to.addresses.join(", ")} — "${subject}"\n` +
+            `server: ${receipt.serverResponse} · id: ${receipt.messageId}`,
+          data: {
+            to: to.addresses,
+            cc: cc.addresses ?? [],
+            subject,
+            messageId: receipt.messageId,
+          },
+        };
+      }
       default:
         return {
           isError: true,
           text:
-            'Unknown action — icloud_mail supports action: "list_unread" | "read". (Sending mail is intentionally not available yet — it waits for an approval gate.)',
+            'Unknown action — icloud_mail supports action: "list_unread" | "read" | "send" (send requires the operator\'s ALLOW_SEND gate).',
         };
     }
   } catch (error) {

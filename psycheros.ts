@@ -94,6 +94,10 @@ function wire(services: Services): HandlerDeps {
     appPassword: services.env.get(SECRETS_KEYS.APP_PASSWORD) ?? "",
     statePath: services.statePath,
     log: (...args: unknown[]) => console.log(...args),
+    allowSend: /^(1|true|yes|on)$/i.test(
+      services.env.get(SECRETS_KEYS.ALLOW_SEND) ?? "",
+    ),
+    senderName: services.env.get(SECRETS_KEYS.SENDER_NAME) || undefined,
   };
 }
 
@@ -234,14 +238,17 @@ const icloudTasksTool = makeTool(
 
 const icloudMailTool = makeTool(
   "icloud_mail",
-  "Read my iCloud mail over IMAP. Pass `action`: 'list_unread' (`limit`, " +
-    "default 10) or 'read' (`uid` from a list result — returns headers plus " +
-    "the text body, truncated). Read-only on purpose: sending waits until " +
-    "the operator and I agree on an approval gate.",
+  "Read and send my iCloud mail. Pass `action`: 'list_unread' (`limit`, " +
+    "default 10), 'read' (`uid` from a list result — headers plus text body, " +
+    "truncated), or 'send' (`to` — one address or an array, `subject`, " +
+    "`body` plain text, optional `cc`). Sending exists only where the " +
+    "operator has set the ALLOW_SEND gate, so every message leaves with " +
+    "their blessing as well as mine; I write send text as carefully as I " +
+    "would speak it aloud.",
   {
     type: "object",
     properties: {
-      action: actionEnum("list_unread", "read"),
+      action: actionEnum("list_unread", "read", "send"),
       limit: {
         type: "integer",
         description: "list_unread: max messages. Default 10, max 25.",
@@ -250,6 +257,16 @@ const icloudMailTool = makeTool(
         type: "number",
         description: "read: message uid from list_unread.",
       },
+      to: {
+        type: "string",
+        description: "send: recipient address (or several, comma-separated).",
+      },
+      cc: {
+        type: "string",
+        description: "send: optional cc address(es), comma-separated.",
+      },
+      subject: { type: "string", description: "send: subject line." },
+      body: { type: "string", description: "send: plain-text body." },
     },
   },
   mailHandler,
