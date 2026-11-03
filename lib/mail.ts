@@ -65,6 +65,7 @@ export async function sendMail(
   deps: MailDeps,
   senderName: string | undefined,
   args: SendMailArgs,
+  extraHeaders?: Record<string, string>,
 ): Promise<SentReceipt> {
   const nodemailer = (await import("npm:nodemailer@6.10.1")).default;
   const transporter = nodemailer.createTransport({
@@ -86,11 +87,108 @@ export async function sendMail(
       cc: args.cc,
       subject: args.subject,
       text: args.body,
+      headers: extraHeaders,
     });
     return { messageId: info.messageId, serverResponse: info.response };
   } finally {
     transporter.close();
   }
+}
+
+export interface ReplyContext {
+  uid: number;
+  /** Display form of the original sender. */
+  from: string;
+  /** The address replies should go to (Reply-To if present, else From). */
+  replyAddress?: string;
+  subject: string;
+  /** Original Message-ID — the In-Reply-To anchor. */
+  messageId?: string;
+  /** Existing References chain to extend, when present. */
+  references?: string;
+  date?: string;
+  /** Extracted text of the original, for quoting. */
+  body: string;
+}
+
+/**
+ * Fetch everything a reply needs: the threading headers, the address to
+ * answer, and a text excerpt for the quote. Separate from readMessage()
+ * because replies need header fields the reader never surfaces.
+ */
+export async function fetchReplyContext(
+  deps: MailDeps,
+  uid: number,
+): Promise<ReplyContext> {
+  const client = await connect(deps);
+  const lock = await client.getMailboxLock("INBOX");
+  try {
+    const message = await client.fetchOne(
+      uid,
+      { uid: true, envelope: true, headers: true, source: true },
+      { uid: true },
+    );
+    if (!message) {
+      throw new Error(`no message with UID ${uid} in INBOX`);
+    }
+    // Header block → unfold continuation lines, then pull named fields.
+    const headers = message.headers ? message.headers.toString() : "";
+    const unfolded = headers.replace(/\r\n[ \t]/g, " ").replace(
+      /\n[ \t]/g,
+      " ",
+    );
+    const headerValue = (name: string): string | undefined => {
+      const match = new RegExp(`^${name}:\\s*([^\\r\\n]*)$`, "im").exec(
+        unfolded,
+      );
+      return match?.[1]?.trim() || undefined;
+    };
+
+    const env = message.envelope;
+    const replyAddress = env?.replyTo?.[0]?.address ?? env?.from?.[0]?.address;
+    const messageId = env?.messageId ?? headerValue("message-id");
+    const source = message.source
+      ? new TextDecoder().decode(message.source)
+      : "";
+    const { text } = extractTextBody(source);
+
+    return {
+      uid,
+      from: envelopeFrom(env?.from),
+      replyAddress,
+      subject: env?.subject ?? "(no subject)",
+      messageId,
+      references: headerValue("references") ?? headerValue("in-reply-to"),
+      date: env?.date?.toISOString(),
+      body: text,
+    };
+  } finally {
+    lock.release();
+    try {
+      await client.logout();
+    } catch {
+      // connection already gone — nothing to clean up
+    }
+  }
+}
+
+/** "Re: foo" for anything that is not already a reply. */
+export function buildReplySubject(subject: string): string {
+  const trimmed = subject.trim();
+  if (/^(re|aw|sv|fw|fwd)\s*:/i.test(trimmed)) return trimmed;
+  return `Re: ${trimmed || "(no subject)"}`;
+}
+
+const QUOTE_MAX_LINES = 30;
+
+/** Standard "> " quoting of the original, capped so replies stay readable. */
+export function quoteOriginal(text: string): string {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const quoted = lines
+    .slice(0, QUOTE_MAX_LINES)
+    .map((line) => (line.length > 0 ? `> ${line}` : ">"))
+    .join("\n");
+  return lines.length > QUOTE_MAX_LINES ? `${quoted}\n> …` : quoted;
 }
 
 async function connect(deps: MailDeps): Promise<ImapFlow> {

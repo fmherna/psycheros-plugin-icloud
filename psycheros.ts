@@ -240,15 +240,16 @@ const icloudMailTool = makeTool(
   "icloud_mail",
   "Read and send my iCloud mail. Pass `action`: 'list_unread' (`limit`, " +
     "default 10), 'read' (`uid` from a list result — headers plus text body, " +
-    "truncated), or 'send' (`to` — one address or an array, `subject`, " +
-    "`body` plain text, optional `cc`). Sending exists only where the " +
+    "truncated), 'send' (`to` — one address or an array, `subject`, `body` " +
+    "plain text, optional `cc`), or 'reply' (`uid` + `body` — threads via " +
+    "In-Reply-To and quotes the original). Sending exists only where the " +
     "operator has set the ALLOW_SEND gate, so every message leaves with " +
     "their blessing as well as mine; I write send text as carefully as I " +
     "would speak it aloud.",
   {
     type: "object",
     properties: {
-      action: actionEnum("list_unread", "read", "send"),
+      action: actionEnum("list_unread", "read", "send", "reply"),
       limit: {
         type: "integer",
         description: "list_unread: max messages. Default 10, max 25.",

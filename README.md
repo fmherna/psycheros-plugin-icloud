@@ -54,7 +54,7 @@ Revoking the old one cuts off any copy of the credential instantly.
 | `icloud_status`   | (none) — config, CalDAV discovery, IMAP reachability, cache age   |
 | `icloud_calendar` | `list` (next N days), `create` (timed or all-day), `delete`       |
 | `icloud_tasks`    | `list`, `add` (with due date), `complete`, `uncomplete`, `delete` |
-| `icloud_mail`     | `list_unread`, `read`, `send` (gated — see below)                 |
+| `icloud_mail`     | `list_unread`, `read`, `send`/`reply` (gated — see below)         |
 
 There is deliberately no mail send until the operator grants it: set
 `PSYCHEROS_PLUGIN_ICLOUD_ALLOW_SEND=1` in `.psycheros/plugin-secrets/icloud.env`
@@ -63,7 +63,10 @@ entity's voice, so it exists only where the operator has explicitly said yes,
 and removing the line closes it again on the next restart. Optional
 `PSYCHEROS_PLUGIN_ICLOUD_SENDER_NAME` sets a display name on outgoing mail.
 Sends go through STARTTLS with the same app-specific password; v1 sends plain
-text (attachments and reply threading are natural next steps).
+text (attachments are a natural next step). **Replies thread**: `action="reply"`
+with a message's `uid` sets `In-Reply-To`/`References` from the original,
+derives the `Re:` subject, addresses the Reply-To sender, and quotes the
+original below the new text.
 
 ## Prompt hook
 

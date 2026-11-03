@@ -22,7 +22,15 @@ import {
   type TaskRecord,
 } from "./caldav.ts";
 import { buildVevent, buildVtodo, icsValueToMs } from "./ics.ts";
-import { checkMail, listUnread, readMessage, sendMail } from "./mail.ts";
+import {
+  buildReplySubject,
+  checkMail,
+  fetchReplyContext,
+  listUnread,
+  quoteOriginal,
+  readMessage,
+  sendMail,
+} from "./mail.ts";
 import {
   type GlanceDeps,
   isConfigured,
@@ -587,16 +595,105 @@ export async function mailHandler(
           },
         };
       }
+      case "reply": {
+        // Same gate as send: a reply is outgoing mail with my voice.
+        if (!deps.allowSend) {
+          return {
+            isError: true,
+            text:
+              `My mail-send gate is closed: ${SECRETS_KEYS.ALLOW_SEND}=1 is ` +
+              `not set in plugin-secrets/icloud.env. Outgoing mail with my ` +
+              `voice needs the operator's explicit yes, then a restart.`,
+            data: { gated: true },
+          };
+        }
+        const uid = num(args, "uid");
+        if (uid === undefined) {
+          return {
+            isError: true,
+            text: 'action "reply" needs `uid` (from list_unread/read).',
+          };
+        }
+        const body = str(args, "body");
+        if (!body) {
+          return {
+            isError: true,
+            text: 'action "reply" needs `body` (plain text).',
+          };
+        }
+        const cc = normalizeAddresses(args["cc"]);
+        if (cc.error) return { isError: true, text: cc.error };
+
+        const original = await fetchReplyContext(auth, uid);
+        if (!original.replyAddress) {
+          return {
+            isError: true,
+            text:
+              `The original message (uid ${uid}) has no reply address — likely a noreply sender.`,
+          };
+        }
+        const headers: Record<string, string> = {};
+        if (original.messageId) {
+          headers["In-Reply-To"] = original.messageId;
+          headers["References"] = original.references &&
+              original.references.includes(original.messageId)
+            ? original.references
+            : [original.references, original.messageId].filter(Boolean).join(
+              " ",
+            );
+        }
+        const subject = buildReplySubject(original.subject);
+        const attribution = `On ${
+          original.date
+            ? new Date(original.date).toLocaleString()
+            : "an earlier day"
+        }, ${original.from} wrote:`;
+        const fullBody = `${body}\n\n${attribution}\n${
+          quoteOriginal(original.body)
+        }`;
+
+        const receipt = await sendMail(
+          auth,
+          deps.senderName,
+          {
+            to: [original.replyAddress],
+            cc: cc.addresses,
+            subject,
+            body: fullBody,
+          },
+          headers,
+        );
+        return {
+          text: `Replied to ${original.from} — "${subject}"\n` +
+            `threaded: ${
+              original.messageId
+                ? "yes (In-Reply-To set)"
+                : "no — original carried no Message-ID"
+            }\n` +
+            `server: ${receipt.serverResponse} · id: ${receipt.messageId}`,
+          data: {
+            to: original.replyAddress,
+            subject,
+            inReplyTo: original.messageId,
+            messageId: receipt.messageId,
+          },
+        };
+      }
       default:
         return {
           isError: true,
           text:
-            'Unknown action — icloud_mail supports action: "list_unread" | "read" | "send" (send requires the operator\'s ALLOW_SEND gate).',
+            'Unknown action — icloud_mail supports action: "list_unread" | "read" | "send" | "reply" (send/reply require the operator\'s ALLOW_SEND gate).',
         };
     }
   } catch (error) {
     return errorResult(error, "mail");
   }
+  return {
+    isError: true,
+    text:
+      "icloud_mail fell through its action switch — this is a bug in my plugin, not in your request.",
+  };
 }
 
 /** Force re-discovery on the next call — used by icloud_status "rediscover". */
