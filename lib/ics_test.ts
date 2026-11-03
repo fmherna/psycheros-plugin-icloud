@@ -104,3 +104,67 @@ Deno.test("date helpers round-trip across input formats", () => {
 
   assert.throws(() => normalizeDateInput("not a date"));
 });
+
+Deno.test("TZID-qualified wall times convert to their true UTC instant", () => {
+  // 18:15 Pacific on Nov 3 (PST, UTC-8) is 02:15Z on Nov 4 — the exact
+  // shape of the "8-hour lie" once seen on shared events.
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "BEGIN:VEVENT",
+    "UID:tz-check@icloud.com",
+    "DTSTART;TZID=America/Los_Angeles:20261103T181500",
+    "DTEND;TZID=America/Los_Angeles:20261103T191500",
+    "SUMMARY:Pacific wall time",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+  const parsed = parseComponent(ics);
+  assert.ok(parsed?.dtstart);
+  assert.equal(parsed.dtstart.tzid, "America/Los_Angeles");
+  const startMs = icsValueToMs(
+    parsed.dtstart.value,
+    false,
+    parsed.dtstart.tzid,
+  );
+  assert.equal(new Date(startMs).toISOString(), "2026-11-04T02:15:00.000Z");
+  // Apple-style vendor-prefixed TZIDs resolve to the same zone.
+  const prefixed = icsValueToMs(
+    parsed.dtstart.value,
+    false,
+    "/freeassociation.sourceforge.net/America/Los_Angeles",
+  );
+  assert.equal(prefixed, startMs);
+  // Floating times (no Z, no TZID) are interpreted in the local zone.
+  const floating = icsValueToMs("20261103T181500", false);
+  assert.equal(floating, new Date(2026, 10, 3, 18, 15, 0).getTime());
+});
+
+Deno.test("recurrence metadata is surfaced: RRULE flag and RECURRENCE-ID", () => {
+  const master = parseComponent(
+    [
+      "BEGIN:VEVENT",
+      "UID:r@icloud.com",
+      "DTSTART:20260505T140000Z",
+      "RRULE:FREQ=WEEKLY",
+      "SUMMARY:Standup",
+      "END:VEVENT",
+    ].join("\r\n"),
+  );
+  assert.ok(master);
+  assert.equal(master.hasRrule, true);
+
+  const override = parseComponent(
+    [
+      "BEGIN:VEVENT",
+      "UID:r@icloud.com",
+      "RECURRENCE-ID:20261110T140000Z",
+      "DTSTART:20261110T160000Z",
+      "SUMMARY:Standup (moved)",
+      "END:VEVENT",
+    ].join("\r\n"),
+  );
+  assert.ok(override);
+  assert.ok(!override.hasRrule);
+  assert.equal(override.recurrenceId?.value, "20261110T140000Z");
+  assert.equal(override.dtstart?.value, "20261110T160000Z");
+});

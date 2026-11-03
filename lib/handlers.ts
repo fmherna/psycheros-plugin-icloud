@@ -236,6 +236,7 @@ export async function calendarHandler(
           `- [${event.calendar}] ${event.title} — ${
             fmtDateTime(event.startMs, event.allDay)
           }` +
+          (event.recurring ? " (recurring — series start shown)" : "") +
           (event.location ? ` @ ${event.location}` : "") +
           ` (uid ${event.uid})`
         );

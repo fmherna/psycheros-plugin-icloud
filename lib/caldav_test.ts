@@ -138,14 +138,25 @@ END:VCALENDAR
 </multistatus>`;
 
 Deno.test("object listing parses etag + calendar-data with attribute-carrying tags", () => {
+  // Apple serializes the quoted etag XML-escaped (&quot;) — decoding it is
+  // load-bearing: reconstructing quotes from the escaped raw string produced
+  // malformed If-Match preconditions and 412 on every completion.
   const objects = parseMultistatusObjects(
-    QUERY_XML,
+    QUERY_XML.replace('"abc-etag-1"', "&quot;abc-etag-1&quot;"),
     "https://p44-caldav.icloud.com/11112222333/calendars/A9CCB11C-8C0F-4E94-A222-4E32B1D57C10/",
   );
   assert.equal(objects.length, 1);
   assert.equal(objects[0].uid, "starter-event@icloud.com");
   assert.equal(objects[0].component.summary, "Starter event");
-  assert.equal(objects[0].etag, "abc-etag-1");
+  assert.equal(objects[0].etag, `"abc-etag-1"`);
   assert.match(objects[0].ics, /BEGIN:VEVENT/);
   assert.ok(objects[0].href.startsWith("https://p44-caldav.icloud.com/"));
+});
+
+Deno.test("weak etags survive normalization verbatim", () => {
+  const objects = parseMultistatusObjects(
+    QUERY_XML.replace('"abc-etag-1"', "W/&quot;weak-1&quot;"),
+    "https://p44-caldav.icloud.com/11112222333/calendars/A9CCB11C-8C0F-4E94-A222-4E32B1D57C10/",
+  );
+  assert.equal(objects[0].etag, `W/"weak-1"`);
 });

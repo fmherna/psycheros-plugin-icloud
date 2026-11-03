@@ -436,31 +436,6 @@ async function queryCollection(
   return parseMultistatusObjects(await response.text(), collection.href);
 }
 
-async function queryByUid(
-  deps: CalDAVDeps,
-  collection: CalDAVCollection,
-  uid: string,
-): Promise<CalDAVObject | undefined> {
-  const body = `<?xml version="1.0" encoding="utf-8"?>` +
-    `<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">` +
-    `<D:prop><D:getetag/><C:calendar-data/></D:prop>` +
-    `<C:filter><C:comp-filter name="VCALENDAR">` +
-    `<C:comp-filter name="VTODO">` +
-    `<C:prop-filter name="UID"><C:text-match collation="exact">${uid}</C:text-match></C:prop-filter>` +
-    `</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>`;
-
-  const response = await davRequest(
-    deps,
-    "REPORT",
-    collection.href,
-    body,
-    {},
-    1,
-  );
-  assertStatus(response, [207], "UID lookup");
-  return parseMultistatusObjects(await response.text(), collection.href)[0];
-}
-
 function toCompactUtc(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return (
@@ -469,6 +444,20 @@ function toCompactUtc(d: Date): string {
       pad(d.getUTCSeconds())
     }Z`
   );
+}
+
+/**
+ * Normalize an ETag as served inside a multistatus. Apple serializes the
+ * quoted form XML-escaped (`&quot;abc&quot;`, sometimes `W/&quot;...&quot;`);
+ * decoding and keeping the result verbatim is what makes If-Match
+ * preconditions pass. Reconstructing quotes myself produced malformed
+ * entity tags and HTTP 412 on every completion.
+ */
+function normalizeEtag(raw: string): string {
+  const etag = decodeXmlEntities(raw).trim();
+  if (!etag) return "";
+  if (etag.startsWith(`"`) || etag.startsWith("W/")) return etag;
+  return `"${etag}"`;
 }
 
 /** Exported for tests — parses a calendar-query REPORT multistatus. */
@@ -491,7 +480,7 @@ export function parseMultistatusObjects(
     if (!component) continue;
     objects.push({
       href: resolveHref(href, baseUrl),
-      etag: (etagMatch?.[1] ?? "").trim().replace(/^"|"$/g, ""),
+      etag: normalizeEtag(etagMatch?.[1] ?? ""),
       uid: component.uid,
       component,
       ics,
@@ -508,6 +497,8 @@ export interface EventRecord {
   startMs: number;
   endMs: number;
   allDay: boolean;
+  /** True when the object carries an RRULE — displayed start is the series start. */
+  recurring: boolean;
   location?: string;
   notes?: string;
 }
@@ -524,6 +515,7 @@ export async function listEvents(
     : discovery.collections.filter((c) => c.kinds.includes("VEVENT"));
 
   const events: EventRecord[] = [];
+  const seen = new Set<string>();
   for (const calendar of calendars) {
     const objects = await queryCollection(deps, calendar, "VEVENT", range);
     for (const object of objects) {
@@ -532,10 +524,21 @@ export async function listEvents(
       const startMs = icsValueToMs(
         component.dtstart.value,
         component.dtstart.dateOnly,
+        component.dtstart.tzid,
       );
       const endMs = component.dtend
-        ? icsValueToMs(component.dtend.value, component.dtend.dateOnly)
+        ? icsValueToMs(
+          component.dtend.value,
+          component.dtend.dateOnly,
+          component.dtend.tzid,
+        )
         : startMs + (component.dtstart.dateOnly ? 86_400_000 : 0);
+      // Recurring masters match the window whenever any instance does; the
+      // server returns the whole object and I show its series start. Same
+      // object can also come back once per matching instance.
+      const dedupeKey = `${object.uid}|${startMs}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
       events.push({
         uid: object.uid ?? "",
         href: object.href,
@@ -544,6 +547,7 @@ export async function listEvents(
         startMs,
         endMs,
         allDay: component.dtstart.dateOnly,
+        recurring: component.hasRrule === true,
         location: component.location,
         notes: component.description,
       });
@@ -589,7 +593,11 @@ export async function listTasks(
         title: component.summary ?? "(untitled)",
         notes: component.description,
         dueMs: component.due
-          ? icsValueToMs(component.due.value, component.due.dateOnly)
+          ? icsValueToMs(
+            component.due.value,
+            component.due.dateOnly,
+            component.due.tzid,
+          )
           : undefined,
         dueDateOnly: component.due?.dateOnly,
         completed,
@@ -647,9 +655,14 @@ export async function createTask(
 }
 
 /**
- * Flip a VTODO's completed state. GET → transform → PUT with If-Match so a
- * concurrent edit from the Reminders app can never be clobbered silently
- * (a stale ETag comes back as 412 and I surface that as a retryable error).
+ * Flip a VTODO's completed state.
+ *
+ * Object lookup deliberately uses the same calendar-query REPORT that
+ * listTasks uses (proven against Apple) rather than a UID-filtered query —
+ * Apple rejects text-match inside a UID prop-filter with 412 regardless of
+ * collation. Mirror lists are personal-scale, so the extra fetch is free.
+ * The PUT carries If-Match with the just-fetched ETag, so a concurrent edit
+ * from the Reminders app fails loudly (412) instead of being clobbered.
  */
 export async function setTaskCompleted(
   deps: CalDAVDeps,
@@ -663,7 +676,8 @@ export async function setTaskCompleted(
     : discovery.collections.filter((c) => c.kinds.includes("VTODO"));
 
   for (const list of lists) {
-    const object = await queryByUid(deps, list, uid);
+    const objects = await queryCollection(deps, list, "VTODO");
+    const object = objects.find((candidate) => candidate.uid === uid);
     if (!object) continue;
     const updated = setCompletedInIcs(object.ics, completed);
     const response = await davRequest(
@@ -673,7 +687,8 @@ export async function setTaskCompleted(
       updated,
       {
         ...icsContentType(),
-        "If-Match": `"${object.etag}"`,
+        // Already normalized (decoded, quoted) at parse time — send verbatim.
+        "If-Match": object.etag,
       },
     );
     assertStatus(response, [204, 200], "task update");
@@ -687,6 +702,7 @@ export async function setTaskCompleted(
         ? icsValueToMs(
           object.component.due.value,
           object.component.due.dateOnly,
+          object.component.due.tzid,
         )
         : undefined,
       dueDateOnly: object.component.due?.dateOnly,

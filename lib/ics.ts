@@ -17,13 +17,25 @@ export interface ParsedComponent {
   description?: string;
   location?: string;
   /** Raw DTSTART/DUE value plus whether it was date-only. */
-  dtstart?: { value: string; dateOnly: boolean };
-  dtend?: { value: string; dateOnly: boolean };
-  due?: { value: string; dateOnly: boolean };
+  dtstart?: IcsDateValue;
+  dtend?: IcsDateValue;
+  due?: IcsDateValue;
+  /** For recurrence overrides: which original instance this replaces. */
+  recurrenceId?: IcsDateValue;
+  /** Present when the component carries an RRULE (it recurs). */
+  hasRrule?: boolean;
   status?: string;
   completed?: string;
   /** Everything else I don't interpret but must preserve on rewrite. */
   rest: string[];
+}
+
+/** An ICS date or date-time value with the parameters that shape it. */
+export interface IcsDateValue {
+  value: string;
+  dateOnly: boolean;
+  /** IANA timezone the wall-clock time is expressed in (TZID param). */
+  tzid?: string;
 }
 
 const PRODID = "-//Psycheros//icloud plugin//EN";
@@ -261,6 +273,7 @@ export function parseComponent(ics: string): ParsedComponent | undefined {
     const name = (semi === -1 ? head : head.slice(0, semi)).toUpperCase();
     const params = semi === -1 ? "" : head.slice(semi);
     const dateOnly = /VALUE=DATE(?!TIME)/i.test(params);
+    const tzid = /TZID=([^;:]+)/i.exec(params)?.[1]?.replace(/^"|"$/g, "");
     switch (name) {
       case "UID":
         parsed.uid = value;
@@ -275,13 +288,18 @@ export function parseComponent(ics: string): ParsedComponent | undefined {
         parsed.location = unescapeIcsText(value);
         break;
       case "DTSTART":
-        parsed.dtstart = { value, dateOnly };
+        parsed.dtstart = tzid ? { value, dateOnly, tzid } : { value, dateOnly };
         break;
       case "DTEND":
-        parsed.dtend = { value, dateOnly };
+        parsed.dtend = tzid ? { value, dateOnly, tzid } : { value, dateOnly };
         break;
       case "DUE":
-        parsed.due = { value, dateOnly };
+        parsed.due = tzid ? { value, dateOnly, tzid } : { value, dateOnly };
+        break;
+      case "RECURRENCE-ID":
+        parsed.recurrenceId = tzid
+          ? { value, dateOnly, tzid }
+          : { value, dateOnly };
         break;
       case "STATUS":
         parsed.status = value;
@@ -290,6 +308,7 @@ export function parseComponent(ics: string): ParsedComponent | undefined {
         parsed.completed = value;
         break;
       default:
+        if (name === "RRULE") parsed.hasRrule = true;
         parsed.rest.push(line);
     }
   }
@@ -324,8 +343,22 @@ export function normalizeDateInput(
   return { value: toIcsDateTimeUtc(date), dateOnly: false, ms };
 }
 
-/** Convert an ICS date or datetime value to epoch millis (UTC assumed). */
-export function icsValueToMs(value: string, dateOnly: boolean): number {
+/**
+ * Convert an ICS date or datetime value to epoch millis.
+ *
+ * - Date-only values are UTC midnights (they represent a calendar day).
+ * - Values with a trailing Z are already UTC.
+ * - TZID-qualified values are wall-clock times in that IANA zone — treating
+ *   them as UTC was my 8-hour lie, because Apple serves Pacific events as
+ *   `DTSTART;TZID=America/Los_Angeles:20261103T181500`.
+ * - Floating times (no Z, no TZID) mean "the observer's local time" per
+ *   RFC 5545, so I interpret them in the local zone.
+ */
+export function icsValueToMs(
+  value: string,
+  dateOnly: boolean,
+  tzid?: string,
+): number {
   const compact = value.replace(/[-:]/g, "");
   if (dateOnly || /^\d{8}$/.test(compact)) {
     const y = +compact.slice(0, 4);
@@ -333,10 +366,82 @@ export function icsValueToMs(value: string, dateOnly: boolean): number {
     const d = +compact.slice(6, 8);
     return Date.UTC(y, m - 1, d);
   }
-  return Date.parse(
-    `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}` +
-      `T${compact.slice(9, 11)}:${compact.slice(11, 13)}:${
-        compact.slice(13, 15)
-      }Z`,
+  const y = +compact.slice(0, 4);
+  const mo = +compact.slice(4, 6);
+  const d = +compact.slice(6, 8);
+  const h = +compact.slice(9, 11);
+  const mi = +compact.slice(11, 13);
+  const s = +compact.slice(13, 15);
+  if (compact.endsWith("Z")) {
+    return Date.UTC(y, mo - 1, d, h, mi, s);
+  }
+  if (tzid) {
+    const zoned = zonedWallTimeToMs(tzid, y, mo, d, h, mi, s);
+    if (!Number.isNaN(zoned)) return zoned;
+  }
+  return new Date(y, mo - 1, d, h, mi, s).getTime();
+}
+
+/**
+ * Interpret wall-clock time in an IANA timezone via Intl's offset table.
+ * Two passes because the offset can differ between the naive guess and the
+ * resolved instant across DST boundaries. Returns NaN when the zone is
+ * unknown to this ICU build.
+ */
+function zonedWallTimeToMs(
+  tz: string,
+  y: number,
+  mo: number,
+  d: number,
+  h: number,
+  mi: number,
+  s: number,
+): number {
+  const candidates = [tz];
+  const stripped = tz.replace(/^\/[^/]+/, ""); // Apple sometimes prefixes vendor paths
+  if (stripped !== tz) candidates.push(stripped);
+  const segments = tz.split("/");
+  if (segments.length >= 2) candidates.push(segments.slice(-2).join("/"));
+  for (const candidate of candidates) {
+    try {
+      // Solve wallAsUtc − offset(at instant) = instant. Each pass re-derives
+      // from the constant wall time; the loop is for DST-edge convergence.
+      const wallAsUtc = Date.UTC(y, mo - 1, d, h, mi, s);
+      let guess = wallAsUtc;
+      for (let pass = 0; pass < 2; pass++) {
+        guess = wallAsUtc - tzOffsetMinutes(candidate, guess) * 60_000;
+      }
+      return guess;
+    } catch {
+      // unknown zone identifier — try the next candidate form
+    }
+  }
+  return NaN;
+}
+
+/** Minutes east of UTC at a given instant for an IANA zone (throws if unknown). */
+function tzOffsetMinutes(tz: string, utcMs: number): number {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts: Record<string, string> = {};
+  for (const part of formatter.formatToParts(new Date(utcMs))) {
+    parts[part.type] = part.value;
+  }
+  const asUtc = Date.UTC(
+    +parts.year!,
+    +parts.month! - 1,
+    +parts.day!,
+    +parts.hour! % 24,
+    +parts.minute!,
+    +parts.second!,
   );
+  return (asUtc - utcMs) / 60_000;
 }
