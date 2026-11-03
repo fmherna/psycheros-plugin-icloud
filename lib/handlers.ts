@@ -232,14 +232,21 @@ export async function calendarHandler(
             data: { events: [] },
           };
         }
-        const lines = events.slice(0, 50).map((event) =>
-          `- [${event.calendar}] ${event.title} — ${
-            fmtDateTime(event.startMs, event.allDay)
-          }` +
-          (event.recurring ? " (recurring — series start shown)" : "") +
-          (event.location ? ` @ ${event.location}` : "") +
-          ` (uid ${event.uid})`
-        );
+        const lines = events.slice(0, 50).map((event) => {
+          // Apple returns the whole series object when any instance matches
+          // the window, so a recurring event's stored start is the series
+          // start (e.g. May 5 for a weekly meeting) — displaying it would
+          // advertise a date outside the window I asked for. The honest
+          // statement is that an occurrence falls inside it.
+          const when = event.recurring
+            ? `(recurring — occurs within the next ${days} day${
+              days === 1 ? "" : "s"
+            })`
+            : fmtDateTime(event.startMs, event.allDay);
+          return `- [${event.calendar}] ${event.title} — ${when}` +
+            (event.location ? ` @ ${event.location}` : "") +
+            ` (uid ${event.uid})`;
+        });
         return {
           text: `My next ${days} day(s), ${events.length} event(s):\n${
             lines.join("\n")

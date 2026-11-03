@@ -127,7 +127,12 @@ export async function refreshGlance(
     unreadSample: mail.status === "fulfilled" ? mail.value : [],
     mailAvailable: mail.status === "fulfilled",
     todayEvents: (events.status === "fulfilled" ? events.value : [])
-      .filter((event) => event.endMs > dayStart.getTime())
+      // Recurring events pass unfiltered: Apple returns the series object
+      // when any instance falls in the window, and the stored end-time is
+      // the series start's — it would look "past" and get dropped even when
+      // today's occurrence is real. The glance shows their start time-of-day,
+      // which for unmodified instances is today's.
+      .filter((event) => event.recurring || event.endMs > dayStart.getTime())
       .map((event) => ({
         title: event.title,
         startMs: event.startMs,

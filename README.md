@@ -106,9 +106,13 @@ unaffected: CalDAV remains Calendar's canonical sync path in both directions.
   the fetched ETag, so a concurrent edit in the Reminders app fails loudly (412)
   instead of being clobbered. Created UIDs are UUIDv4 + `@psycheros`; creation
   uses `If-None-Match: *`.
-- **v1 scope.** Plain `VEVENT`/`VTODO` only — no recurrence rules, no alarms.
-  Due dates of `YYYY-MM-DD` stay date-only, which shows as "scheduled" in
-  Reminders without a time-of-day nag.
+- **v1 scope.** Plain `VEVENT`/`VTODO` only — no recurrence expansion, no
+  alarms. Due dates of `YYYY-MM-DD` stay date-only, which shows as "scheduled"
+  in Reminders without a time-of-day nag. Recurring events are detected (RRULE)
+  but not expanded: when a series has an occurrence inside the requested window,
+  Apple returns the whole series object, so list output says "recurring — occurs
+  within the next N days" rather than advertising the series' original start
+  date.
 - **Graceful degradation.** Missing credentials, unreachable mail, or a failed
   refresh surface as readable tool errors / a silent hook skip — never a crashed
   daemon.
