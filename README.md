@@ -88,12 +88,13 @@ The Google side is a plain file read — no OAuth, no API.
 Apple has been migrating Reminders to a new engine. When a list gets upgraded
 (Apple leaves notice items in the list — e.g. "The creator of this list has
 upgraded these reminders."), the classic CalDAV VTODO surface becomes a
-**compatibility mirror**: items entered in the Reminders app or on icloud.com
-may not appear to me, and I may see only Apple's upgrade notices where real
-tasks live. Writes (add/complete/ delete) are accepted by the server, but
-whether they sync UP into the new engine for a given account should be verified
-once against icloud.com before relying on them. Calendar events and mail are
-unaffected — CalDAV remains Calendar's canonical sync path.
+**one-way-isolated mirror**, confirmed empirically on an upgraded account: items
+entered in the Reminders app or on icloud.com do **not** flow down to CalDAV
+reads, and tasks written via CalDAV do **not** flow up into the new engine (they
+stay visible only to CalDAV clients). Treat `icloud_tasks` as the entity's
+private task store — shared across embodiments via entity-core, but not a
+surface shared with humans on upgraded accounts. Calendar events and mail are
+unaffected: CalDAV remains Calendar's canonical sync path in both directions.
 
 ## Design notes
 
